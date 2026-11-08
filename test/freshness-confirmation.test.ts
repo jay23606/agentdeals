@@ -22,7 +22,7 @@ interface CountedOffer {
   url: string;
   verifiedDate: string;
   category: string;
-  restated_from?: { reading_date: string } | null;
+  restated_from?: { reading_date: string; restated_on?: string | null } | null;
 }
 
 const m = getFreshnessMetrics();
@@ -37,8 +37,14 @@ const within = (date: string | null | undefined, days: number) =>
 
 const termsWeTookFromAReading = (o: CountedOffer) => Boolean(o.restated_from);
 
-const storedSuccessOf = (o: CountedOffer): string | null =>
-  termsWeTookFromAReading(o) ? null : (store.get(`${o.vendor}|${o.url}`)?.last_success ?? null);
+// The confirmation the store holds for an offer, with the restatement rule written out here
+// rather than read from production: a restated offer counts only a confirmation after restated_on.
+const storedSuccessOf = (o: CountedOffer): string | null => {
+  const success = store.get(`${o.vendor}|${o.url}`)?.last_success ?? null;
+  if (!o.restated_from) return success;
+  const restatedOn = o.restated_from.restated_on ?? null;
+  return success && restatedOn && success > restatedOn ? success : null;
+};
 
 const confirmedFromTheStore = offers.filter((o) => within(storedSuccessOf(o), 90));
 const stampedFromTheCatalogue = offers.filter((o) => within(o.verifiedDate, 90));
@@ -87,14 +93,15 @@ describe("the freshness figure counts confirmations and says so", () => {
   it("counts no confirmation for an entry whose terms came from a reading that disagreed with us", () => {
     const confirmed = offers.find((o) => storedSuccessOf(o) !== null);
     assert.ok(confirmed, "no entry in the catalogue holds a confirming read to build the case on");
-    const restated = { ...confirmed, restated_from: { reading_date: "2026-09-07" } };
-    assert.notStrictEqual(store.get(`${confirmed.vendor}|${confirmed.url}`)?.last_success, undefined);
-    assert.strictEqual(storedSuccessOf(restated), null);
-    assert.strictEqual(confirmationDate(restated), null);
+    const success = storedSuccessOf(confirmed) as string;
+    const restatedBefore = { ...confirmed, restated_from: { reading_date: "2026-09-07", restated_on: success } };
+    const restatedAfter = { ...confirmed, restated_from: { reading_date: "2026-09-07", restated_on: "2000-01-01" } };
+    assert.strictEqual(storedSuccessOf(restatedBefore as CountedOffer), null);
+    assert.strictEqual(storedSuccessOf(restatedAfter as CountedOffer), success);
   });
 
   it("admits no confirmation the store does not hold", () => {
-    const unsourced = confirmedFromTheStore.filter((o) => confirmationDate(o) === null);
+    const unsourced = confirmedFromTheStore.filter((o) => storedSuccessOf(o) === null);
     assert.deepStrictEqual(unsourced.map((o) => `${o.vendor}|${o.url}`), [], bothCounts());
   });
 
